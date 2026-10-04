@@ -3,13 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Detecting NSG changes in Microsoft Sentinel | Sandip Khadka Blog</title>
+    <title>Detecting NSG changes in Microsoft Sentinel | Sandip Khadka</title>
     <meta name="description" content="What the Azure Activity Log actually records when a Network Security Group changes, and the quirks that shape a Sentinel detection rule.">
     <link rel="icon" href="../favicon.ico" sizes="any">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../style.css">
+    <!-- SEO -->
+    <meta name="author" content="Sandip Khadka">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <link rel="canonical" href="https://blog.khadkasandip.com.np/posts/nsg-change-detection-activity-log.html">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Sandip Khadka Blog">
+    <meta property="og:title" content="Detecting NSG changes in Microsoft Sentinel: what the Activity Log really gives you">
+    <meta property="og:description" content="What the Azure Activity Log actually records when a Network Security Group changes, and the quirks that shape a Sentinel detection rule.">
+    <meta property="og:url" content="https://blog.khadkasandip.com.np/posts/nsg-change-detection-activity-log.html">
+    <meta property="og:image" content="https://blog.khadkasandip.com.np/images/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="article:published_time" content="2026-09-20">
+    <meta property="article:author" content="Sandip Khadka">
+    <meta property="article:section" content="Microsoft Sentinel">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Detecting NSG changes in Microsoft Sentinel: what the Activity Log really gives you">
+    <meta name="twitter:description" content="What the Azure Activity Log actually records when a Network Security Group changes, and the quirks that shape a Sentinel detection rule.">
+    <meta name="twitter:image" content="https://blog.khadkasandip.com.np/images/og-image.png">
+    <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Detecting NSG changes in Microsoft Sentinel: what the Activity Log really gives you", "description": "What the Azure Activity Log actually records when a Network Security Group changes, and the quirks that shape a Sentinel detection rule.", "datePublished": "2026-09-20", "dateModified": "2026-09-20", "author": {"@type": "Person", "name": "Sandip Khadka", "url": "https://khadkasandip.com.np"}, "image": "https://blog.khadkasandip.com.np/images/og-image.png", "mainEntityOfPage": {"@type": "WebPage", "@id": "https://blog.khadkasandip.com.np/posts/nsg-change-detection-activity-log.html"}, "publisher": {"@type": "Person", "name": "Sandip Khadka"}}</script>
+    <!-- /SEO -->
 </head>
 <body>
     <header class="site-header">

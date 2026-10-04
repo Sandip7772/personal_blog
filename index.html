@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sandip Khadka Blog | Cybersecurity notes from daily work</title>
+    <meta name="description" content="Notes from my day-to-day work in cybersecurity: SOC operations, SIEM, CrowdStrike and incident response.">
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="index.html" aria-label="Blog home"><img src="images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="index.html">Blog</a>
+                <a href="https://khadkasandip.com.np">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero">
+        <span class="eyebrow">The Blog</span>
+        <h1><span>Notes</span> from my daily work</h1>
+        <p>What I learn, build and fix as a Cyber Security Analyst: SOC operations, SIEM, CrowdStrike and incident response.</p>
+        <div class="search">
+            <input type="search" id="search" placeholder="Search posts..." aria-label="Search posts">
+        </div>
+    </section>
+
+    <main class="wrap listing">
+        <div class="grid" id="grid" aria-live="polite">
+            <p class="status">Loading posts...</p>
+        </div>
+    </main>
+
+    <footer class="site-footer">
+        <img src="images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="index.html">Blog</a>
+            <a href="https://khadkasandip.com.np">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact">Contact</a>
+            <a href="https://www.linkedin.com/in/sandip-khadka7772/" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+        </nav>
+        <small>&copy; <span id="year"></span> Sandip Khadka. All rights reserved.</small>
+    </footer>
+
+    <script>
+        document.getElementById('year').textContent = new Date().getFullYear();
+
+        var grid = document.getElementById('grid');
+        var searchBox = document.getElementById('search');
+        var allPosts = [];
+
+        function fmt(value) {
+            var d = new Date(value);
+            if (isNaN(d.getTime())) { return ''; }
+            return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear();
+        }
+        function el(tag, cls, text) {
+            var n = document.createElement(tag);
+            if (cls) { n.className = cls; }
+            if (text) { n.textContent = text; }
+            return n;
+        }
+        function render(posts) {
+            grid.textContent = '';
+            if (!posts.length) { grid.appendChild(el('p', 'status', 'No posts found.')); return; }
+            posts.forEach(function (p, i) {
+                // The first card is wide only when that fills the 3-column rows evenly (2, 5, 8... posts)
+                var featured = i === 0 && posts.length % 3 === 2;
+                var card = el('article', 'card' + (featured ? ' featured' : ''));
+                card.appendChild(el('div', 'card-top'));
+                var body = el('div', 'card-body');
+                var meta = el('div', 'meta');
+                if (p.tag) { meta.appendChild(el('span', 'tag', p.tag)); }
+                meta.appendChild(el('span', '', fmt(p.date)));
+                body.appendChild(meta);
+                var h = el('h2');
+                var a = el('a', '', p.title);
+                a.href = p.url;
+                h.appendChild(a);
+                body.appendChild(h);
+                body.appendChild(el('p', '', p.excerpt || ''));
+                var more = el('a', 'more', 'Read more →');
+                more.href = p.url;
+                body.appendChild(more);
+                card.appendChild(body);
+                grid.appendChild(card);
+            });
+        }
+
+        fetch('posts.json').then(function (r) { return r.json(); }).then(function (posts) {
+            allPosts = posts.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+            render(allPosts);
+        }).catch(function () {
+            grid.textContent = '';
+            grid.appendChild(el('p', 'status', 'Could not load posts. Please try again later.'));
+        });
+
+        searchBox.addEventListener('input', function (e) {
+            var q = e.target.value.trim().toLowerCase();
+            render(allPosts.filter(function (p) {
+                return (p.title + ' ' + (p.excerpt || '') + ' ' + (p.tag || '')).toLowerCase().indexOf(q) !== -1;
+            }));
+        });
+    </script>
+</body>
+</html>

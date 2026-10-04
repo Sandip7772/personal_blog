@@ -1,0 +1,23 @@
+[
+  {
+    "title": "Hunting suspicious sign-ins in Microsoft Sentinel",
+    "url": "https://blog.khadkasandip.com.np/posts/sentinel-suspicious-signins.html",
+    "date": "2026-10-03",
+    "tag": "Microsoft Sentinel",
+    "excerpt": "A walk-through of the KQL queries I use each morning to spot impossible travel and repeated failed sign-ins."
+  },
+  {
+    "title": "Tuning noisy CrowdStrike detections",
+    "url": "https://blog.khadkasandip.com.np/posts/crowdstrike-tuning.html",
+    "date": "2026-10-01",
+    "tag": "CrowdStrike",
+    "excerpt": "How I cut false positives in half without losing visibility, and what I check before excluding anything."
+  },
+  {
+    "title": "My daily SOC checklist",
+    "url": "https://blog.khadkasandip.com.np/posts/daily-soc-checklist.html",
+    "date": "2026-09-28",
+    "tag": "SOC",
+    "excerpt": "The short list I run through at the start of every shift to keep alerts, tickets and patching on track."
+  }
+]

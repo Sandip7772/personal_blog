@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hunting suspicious sign-ins in Microsoft Sentinel | Sandip Khadka Blog</title>
+    <meta name="description" content="A walk-through of the KQL queries I use each morning to spot impossible travel and repeated failed sign-ins.">
+    <link rel="icon" href="../favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="../index.html" aria-label="Blog home"><img src="../images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="../index.html">Blog</a>
+                <a href="https://khadkasandip.com.np">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="post-hero">
+        <div class="inner">
+            <a class="back" href="../index.html">&larr; All posts</a>
+            <div class="meta"><span class="tag">Microsoft Sentinel</span><span>03/10/2026</span><span>4 min read</span></div>
+            <h1>Hunting suspicious sign-ins in Microsoft Sentinel</h1>
+        </div>
+    </section>
+
+    <article class="article">
+        <p>This is a dummy post used to preview how a real article will look. Replace this text with your own writing.</p>
+        <h2>Why start with sign-ins</h2>
+        <p>Most incidents I see begin with an identity. A quick morning review of sign-in activity catches problems before they spread.</p>
+        <blockquote>Start with the questions you ask every day, then turn them into queries.</blockquote>
+        <h2>The query</h2>
+        <pre><code>SigninLogs
+| where TimeGenerated &gt; ago(24h)
+| where ResultType != 0
+| summarize Failures = count() by UserPrincipalName, IPAddress
+| where Failures &gt; 10
+| order by Failures desc</code></pre>
+        <h3>What I check next</h3>
+        <ul>
+            <li>Is the IP address new for this user?</li>
+            <li>Did a successful sign-in follow the failures?</li>
+            <li>Is <code>MFA</code> enforced for the account?</li>
+        </ul>
+        <hr>
+        <div class="post-footer">
+            <a class="btn" href="../index.html">&larr; All posts</a>
+            <a class="btn" href="https://khadkasandip.com.np/#contact">Get in touch</a>
+        </div>
+    </article>
+
+    <footer class="site-footer">
+        <img src="../images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="../index.html">Blog</a>
+            <a href="https://khadkasandip.com.np">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact">Contact</a>
+        </nav>
+        <small>&copy; 2026 Sandip Khadka. All rights reserved.</small>
+    </footer>
+</body>
+</html>

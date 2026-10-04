@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emailing Sentinel incidents with a Logic App | Sandip Khadka Blog</title>
+    <meta name="description" content="Building an email notification playbook for Microsoft Sentinel incidents, including the permission errors, sender account trap and testing methods.">
+    <link rel="icon" href="../favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="../index.html" aria-label="Blog home"><img src="../images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="../index.html">Blog</a>
+                <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="post-hero">
+        <div class="inner">
+            <a class="back" href="../index.html">&larr; All posts</a>
+            <div class="meta"><span class="tag">Microsoft Sentinel</span><span>04/10/2026</span><span>8 min read</span></div>
+            <h1>Emailing Sentinel incidents with a Logic App playbook</h1>
+        </div>
+    </section>
+
+    <article class="article">
+        <p>A detection nobody sees does not protect anything. Once my NSG change rule was creating incidents, I wanted the right people to get an email with the key details and a link straight to the incident.</p>
+        <p>In Sentinel this takes three parts: a Logic App playbook that sends the email, a permission grant so Sentinel can run it, and an automation rule that triggers it. Most of the time went on the permissions and one account decision, so those get the most space here.</p>
+
+        <h2>Part 1: the playbook</h2>
+        <p>In Sentinel go to <strong>Automation, Create, Playbook with incident trigger</strong>. Pick a resource group and a region matching the workspace, and leave Log Analytics off.</p>
+        <p>On the Connections page only the Microsoft Sentinel connector appears. That is expected. This page pre-configures connectors Sentinel already knows the playbook needs, which at creation time is just the trigger's own. Leave it on <strong>Connect with managed identity</strong>. Outlook is added later, in the designer.</p>
+        <p>In the designer, add <strong>New step, Outlook, Send an email (V2)</strong>. It prompts for sign-in at this point, and whoever authenticates becomes the sender.</p>
+
+        <h3>Choose the sender carefully</h3>
+        <p>The Office 365 connector authenticates as a user, and mail is sent from that account, including that user's Outlook signature. In my case the signature appended below the "do not reply" line.</p>
+        <p>That is cosmetic. The bigger problem is that this is a single point of failure. If that account is disabled, its password rotates or MFA re-prompts, the connection breaks and alerts stop <strong>silently</strong>. Nobody notices a notification that does not arrive.</p>
+        <blockquote>Use a dedicated licensed service mailbox, not a personal account. You can switch later with Change connection in the designer, which takes a few clicks and not a rebuild.</blockquote>
+
+        <h3>Building the email body</h3>
+        <p>There are two routes. The designer's Code preview is read-only, so writing HTML needs the Logic App's own code view (Logic App resource, Development Tools, Logic app code view). Or build the body from dynamic content in the designer, in which case two rules matter:</p>
+        <ul>
+            <li><strong>Type the labels.</strong> Chips inserted with no text between them produce values run together with no indication of what each one is.</li>
+            <li><strong>Curly braces are not tokens.</strong> Typing <code>{Incident Title}</code> inserts literal characters. A real dynamic field renders as a coloured pill.</li>
+        </ul>
+        <p>These field paths resolved correctly against a real incident payload:</p>
+        <pre><code>triggerBody()?['object']?['properties']?['title']
+triggerBody()?['object']?['properties']?['incidentNumber']
+triggerBody()?['object']?['properties']?['severity']
+triggerBody()?['object']?['properties']?['status']
+triggerBody()?['object']?['properties']?['createdTimeUtc']
+triggerBody()?['object']?['properties']?['description']
+triggerBody()?['object']?['properties']?['incidentUrl']</code></pre>
+        <p>Do not use <code>additionalData.mergedIncidentNumber</code>. It relates to incident merging and is null unless incidents have been merged. Use <code>incidentNumber</code>. The subject is simply <code>[Sentinel]</code> followed by the title.</p>
+        <p>The email itself is a small table with the incident number, severity, status and created time, then a <strong>Detail</strong> line from the incident description, and a button linking to the incident. That Detail line is why the alert description format in the previous post matters.</p>
+
+        <h3>Permissions on the playbook</h3>
+        <p>Grant the playbook's managed identity <strong>Microsoft Sentinel Responder</strong> on the workspace.</p>
+
+        <h2>Part 2: letting Sentinel run the playbook</h2>
+        <p>Without this step the playbook cannot be selected in an automation rule, and trying to run it by hand fails with:</p>
+        <blockquote>Missing required permissions for Microsoft Sentinel on the playbook resource.</blockquote>
+        <p>Sentinel's own service principal needs the <strong>Microsoft Sentinel Automation Contributor</strong> role on the resource group holding the Logic App. Go to <strong>Sentinel, Settings, Playbook permissions, Configure permissions</strong>, select the resource group and apply.</p>
+        <p>This action needs <strong>Owner</strong> or <strong>User Access Administrator</strong> on that resource group, because it assigns a role. Contributor is not enough. That is by design, so nobody can quietly escalate their own access.</p>
+
+        <h3>Verify with the CLI, not the portal</h3>
+        <p>The portal's Manage permissions screen caches, and can show "No permissions" for several minutes after a successful grant. Check the role assignment directly:</p>
+        <pre><code>az role assignment list \
+  --scope /subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg-name&gt; \
+  --query "[?roleDefinitionName=='Microsoft Sentinel Automation Contributor']" \
+  -o table</code></pre>
+        <p>A returned row with <code>PrincipalType: ServicePrincipal</code> confirms the grant, whatever the portal shows. RBAC propagation can take up to ten minutes, so hard-refresh the browser before assuming failure.</p>
+
+        <h2>Part 3: the automation rule</h2>
+        <p>Go to <strong>Sentinel, Automation, Create, Automation rule</strong> with these settings:</p>
+        <ul>
+            <li>Trigger: <strong>When incident is created</strong>.</li>
+            <li>Condition: <strong>Analytic rule name contains NSG</strong>.</li>
+            <li>Action: <strong>Run playbook</strong>, then the playbook from part 1.</li>
+            <li>Rule expiration: indefinite.</li>
+        </ul>
+        <p>In the playbook dropdown, two different greyed-out states look similar but mean different things:</p>
+        <ul>
+            <li>A message about <strong>Microsoft Sentinel permissions</strong> means Sentinel lacks rights on that resource group. Grant them as above, or wait for propagation.</li>
+            <li><strong>No user permissions</strong> means <em>you</em> lack rights on that Logic App, typically because it sits in a subscription you do not administer.</li>
+        </ul>
+
+        <h3>Do not email everything</h3>
+        <p>This rule fires on every NSG change at Low severity, and that can get noisy. You can exclude Low severity so only the exposure rule emails, or reserve email for the exposure rule entirely and leave routine changes in the incident queue as an audit record. I prefer the second: email what needs action and review the rest in Sentinel.</p>
+
+        <h2>Testing, fastest first</h2>
+        <h3>Method 1: run with a sample payload</h3>
+        <p>This is the fastest route and needs no permission grant, because the Logic App triggers itself. In the designer use <strong>Run draft with payload</strong>. It expects a JSON incident payload, not HTML or the email body, and anything else returns "is not valid JSON". A minimal working payload:</p>
+        <pre><code>{
+  "object": {
+    "properties": {
+      "title": "NSG Deleted (rule): example-nsg by &lt;user&gt;",
+      "incidentNumber": 3,
+      "severity": "Low",
+      "status": "New",
+      "createdTimeUtc": "2026-09-23T10:44:56.961Z",
+      "description": "n/a n/a n/a port n/a from n/a in Example subscription - exposure Review. Caller &lt;user&gt; from &lt;ip&gt; using Contributor.",
+      "incidentUrl": "https://portal.azure.com"
+    }
+  }
+}</code></pre>
+        <p>For a payload that matches your tenant exactly, copy one from Run history, any previous run, the trigger, then Outputs.</p>
+        <h3>Method 2: run against a real incident</h3>
+        <p>Open an incident in Sentinel and choose <strong>Actions, Run playbook</strong>. This uses real data with no waiting, but needs the permission grant from part 2.</p>
+        <h3>Method 3: end to end</h3>
+        <p>Make a real change on a non-production NSG, then delete it, and wait for the scheduled run, the incident and the automation rule. It is the slowest but the only method that proves the whole chain. To avoid waiting an hour per cycle, temporarily set the rule to run every 5 minutes with a 20-minute lookup and <code>report = 10m</code>, then restore hourly afterwards.</p>
+        <p>In my test the n/a values in the email were correct, because my test change was a rule deletion and the Activity Log carries no payload for deletes.</p>
+
+        <h2>When it does not work</h2>
+        <p>Open the Logic App, then <strong>Run history</strong>, the run, then <strong>Send an email (V2)</strong> and its <strong>Inputs</strong>. This shows the body exactly as submitted, before sending. Blank values there point at the failing expression without waiting for mail to arrive. Click the trigger in the same run and read its <strong>Outputs</strong> to see the real payload structure, then correct the path to match.</p>
+        <p>If Detail is blank while the other fields populate, the Alert Description Format did not save on the analytics rule. Fix it there, not in the playbook.</p>
+
+        <h2>Takeaways</h2>
+        <ul>
+            <li>Use a dedicated service mailbox as the sender. A personal account is a silent single point of failure.</li>
+            <li>Sentinel needs its own role on the playbook's resource group, and granting it needs Owner or User Access Administrator.</li>
+            <li>Trust the CLI over the portal when checking role assignments.</li>
+            <li>Email only what needs action, and keep routine changes in the queue.</li>
+            <li>Test with a sample payload first, then a real incident, then end to end.</li>
+        </ul>
+        <hr>
+        <div class="post-footer">
+            <a class="btn" href="../index.html">&larr; All posts</a>
+            <a class="btn" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Get in touch</a>
+        </div>
+    </article>
+
+    <footer class="site-footer">
+        <img src="../images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="../index.html">Blog</a>
+            <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+        </nav>
+        <small>&copy; 2026 Sandip Khadka. All rights reserved.</small>
+    </footer>
+</body>
+</html>

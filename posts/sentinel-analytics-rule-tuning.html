@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tuning Sentinel analytics rules | Sandip Khadka Blog</title>
+    <meta name="description" content="The scheduling, grouping and severity settings that stop a Sentinel analytics rule from flooding your incident queue, using an NSG change rule as the example.">
+    <link rel="icon" href="../favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="../index.html" aria-label="Blog home"><img src="../images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="../index.html">Blog</a>
+                <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="post-hero">
+        <div class="inner">
+            <a class="back" href="../index.html">&larr; All posts</a>
+            <div class="meta"><span class="tag">Microsoft Sentinel</span><span>01/10/2026</span><span>7 min read</span></div>
+            <h1>Tuning Sentinel analytics rules so they don't flood your queue</h1>
+        </div>
+    </section>
+
+    <article class="article">
+        <p>A detection query that returns the right rows is only half the job. The wrong scheduling or grouping settings can turn one firewall change into 144 duplicate incidents, or twelve changes into one alert that shows only one of them.</p>
+        <p>This post covers the settings I got wrong or nearly got wrong while building my NSG change rule in Microsoft Sentinel. The same lessons apply to most scheduled analytics rules.</p>
+
+        <h2>Start disabled, and start at Low</h2>
+        <p>Two choices on the first page of the rule wizard matter more than they look.</p>
+        <ul>
+            <li><strong>Severity: Low, not the Medium default.</strong> This rule fires on every NSG change, and most are routine. Medium would bury genuine signals within a week. Internet exposure is handled by a separate High-severity rule.</li>
+            <li><strong>Status: Disabled at first.</strong> Check the expected alert volume on the later pages, then enable it. A rule that floods the queue overnight is hard to recover from with the team.</li>
+        </ul>
+        <p>MITRE ATT&amp;CK tagging is optional and only affects the coverage matrix. I used Defense Evasion with T1562.007 (Impair Defenses: Disable or Modify Cloud Firewall). If sub-techniques do not show, select the tactic alone.</p>
+
+        <h2>The pairing rule: <code>report</code> must equal the run frequency</h2>
+        <p>This is the single most important setting. The query has a <code>report</code> variable that sets how far back it looks. If it does not match how often the rule runs, one of two things happens:</p>
+        <ul>
+            <li><strong>Matched</strong> (hourly rule, <code>report = 1h</code>): each run examines the hour since the last run. Nothing is missed and nothing is seen twice.</li>
+            <li><strong>Mismatched</strong> (hourly rule, <code>report = 24h</code>): every run re-examines the same 24 hours. A change at 09:00 alerts again on every run until it ages out. At a 10-minute frequency that is roughly 144 duplicate incidents for one change.</li>
+        </ul>
+        <h3>Why the lookup window is wider</h3>
+        <p>The rule's own "lookup data from the last" window is set one hour wider than <code>report</code>. The query needs to reach the Start row, which carries the rule detail, even when its Success row lands near the edge of the window. Without the padding, a change at the boundary is reported with no rule detail.</p>
+        <ul>
+            <li>Runs every 10 minutes: <code>report = 10m</code>, lookup window 20 minutes.</li>
+            <li>Runs every 1 hour: <code>report = 1h</code>, lookup window 2 hours.</li>
+            <li>Runs every 24 hours: <code>report = 24h</code>, lookup window 24 hours.</li>
+        </ul>
+        <p>Set the scheduling fields before pasting the query, because the query's own <code>ago()</code> cannot reach further back than the lookup window. The field takes one number and one unit, so <code>1h 15m</code> is not possible. Use 2 hours or 75 minutes.</p>
+        <blockquote>Never change the frequency without changing <code>report</code>. The two must stay paired, or the rule duplicates or leaves gaps.</blockquote>
+
+        <h2>Event grouping: one alert per event</h2>
+        <p>Set this to <strong>Trigger an alert for each event</strong>, not the default. The default collapses a run's results into a single alert, so the alert name and custom details resolve from one row. Twelve rule changes would then show one port, one source and one rule name, and most of the parsing work is lost.</p>
+        <p>I left the alert threshold at "is greater than 0" and suppression off.</p>
+
+        <h2>Alert grouping: tame the incident queue</h2>
+        <p>Event grouping and alert grouping are different layers, and mixing them up is common:</p>
+        <ul>
+            <li><strong>Event grouping</strong> controls how many <em>alerts</em> a run produces.</li>
+            <li><strong>Alert grouping</strong> controls how many <em>incidents</em> those alerts become.</li>
+        </ul>
+        <p>With one alert per event and alert grouping on, twelve changes by one person in an hour become twelve alerts inside <strong>one</strong> incident. Each alert keeps its own custom details, so no rule information is lost while the queue stays readable. My settings:</p>
+        <ul>
+            <li>Group related alerts: <strong>Enabled</strong>, time frame <strong>1 hour</strong>.</li>
+            <li>Grouping method: <strong>selected entity types and details match</strong>, with <strong>Account</strong> as the only entity.</li>
+            <li>Re-open closed matching incidents: <strong>Disabled</strong>.</li>
+        </ul>
+        <h3>Why Account and not "all entities match"</h3>
+        <p>The recommended default sounds safer, but here it groups almost nothing. It requires the account, the IP and the Azure resource to all match, and every security rule has its own resource ID. A twelve-rule NSG save produces twelve distinct resources and therefore twelve separate incidents. Matching on Account alone gives one incident per person per hour, which is how the change would be investigated anyway.</p>
+        <h3>Two more details</h3>
+        <ul>
+            <li>The grouping time frame should match the rule frequency. At 5 hours on an hourly rule, a change at 09:00 and an unrelated one at 13:00 land in the same ticket.</li>
+            <li>Leave re-open off. If it is on, a change tomorrow reopens yesterday's closed incident, which corrupts both the audit trail and your close-rate metrics.</li>
+        </ul>
+        <p>For the High-severity exposure rule I do the opposite and disable alert grouping. Every internet-exposed rule should be its own incident with its own owner and closure note.</p>
+
+        <h2>Alert enhancement: put the detail on the incident</h2>
+        <h3>Entity mapping</h3>
+        <p>Entities let Sentinel correlate this incident with others involving the same person, IP or resource, and they drive the investigation graph. I map three:</p>
+        <ul>
+            <li>Account (FullName) to <code>AccountCustomEntity</code></li>
+            <li>IP (Address) to <code>IPCustomEntity</code></li>
+            <li>Azure resource (ResourceId) to <code>ResourceCustomEntity</code></li>
+        </ul>
+        <p>These columns must survive the query's final <code>project</code>. If they are dropped, incidents are created with no entities and nothing warns you. A rule can also fail at runtime while its query runs fine in Logs, and a dropped column that entity mapping or a custom detail references is the usual cause.</p>
+        <h3>Custom details and alert text</h3>
+        <p>Custom details put the rule contents on the incident itself, so an analyst sees the port, source and action without opening Logs. I add each of these as a key and value pair using the same name for both: <code>ChangeType</code>, <code>Exposure</code>, <code>Subscription</code>, <code>ResourceGroup</code>, <code>NSGName</code>, <code>RuleName</code>, <code>Priority</code>, <code>Direction</code>, <code>Action</code>, <code>Protocol</code>, <code>SourceIP</code>, <code>DestPort</code>, <code>DestinationIP</code>, <code>RoleUsed</code>, <code>PrincipalType</code> and <code>MfaSatisfied</code>.</p>
+        <p>Use <code>Subscription</code> rather than <code>SubscriptionName</code>. The first carries the ID fallback for subscriptions missing from the lookup, and the second is blank for those.</p>
+        <p>The alert name and description formats use the same columns:</p>
+        <pre><code>Name:        NSG {{ChangeType}}: {{NSGName}}/{{RuleName}} by {{DisplayName}}
+Description: {{Action}} {{Direction}} {{Protocol}} port {{DestPort}} from {{SourceIP}}
+             in {{Subscription}} - exposure {{Exposure}}. Caller {{Caller}}
+             from {{CallerIpAddress}} using {{RoleUsed}}.</code></pre>
+        <p>The description matters more than it looks, because the email playbook in the next post surfaces it as the "Detail" line. If it is blank, the notification arrives with no rule information at all.</p>
+
+        <h2>Test before you enable</h2>
+        <p>In the rule wizard, <strong>Test with current data</strong> replays the last 50 evaluations and projects alert volume. A flat line near zero with occasional spikes is what you want. Steady alerts every interval mean something matches constantly. Check the <code>PrincipalType</code> column first, since pipeline service principals are the usual cause.</p>
+        <p>If incidents are not being created at all, the health table shows why:</p>
+        <pre><code>SentinelHealth
+| where TimeGenerated &gt; ago(1d)
+| where SentinelResourceName has "NSG"
+| project TimeGenerated, SentinelResourceName, Status, Description, ExtendedProperties
+| order by TimeGenerated desc</code></pre>
+
+        <h2>Takeaways</h2>
+        <ul>
+            <li>Keep <code>report</code> equal to the run frequency, and pad the lookup window.</li>
+            <li>One alert per event, grouped into incidents by Account.</li>
+            <li>Routine changes at Low severity, with a separate High rule for exposure.</li>
+            <li>Keep the entity columns through the final <code>project</code>.</li>
+            <li>Start disabled, test with current data, then enable.</li>
+        </ul>
+        <p>In the final post: emailing the incident to the team with a Logic App playbook.</p>
+        <hr>
+        <div class="post-footer">
+            <a class="btn" href="../index.html">&larr; All posts</a>
+            <a class="btn" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Get in touch</a>
+        </div>
+    </article>
+
+    <footer class="site-footer">
+        <img src="../images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="../index.html">Blog</a>
+            <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+        </nav>
+        <small>&copy; 2026 Sandip Khadka. All rights reserved.</small>
+    </footer>
+</body>
+</html>

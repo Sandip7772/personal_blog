@@ -109,7 +109,41 @@ img { max-width: 100%; display: block; }
   .card.featured { grid-column: auto; }
   .card.featured h2 { font-size: 1.2rem; }
   .site-nav { gap: 1rem; }
-  .site-nav a:not(.cta):not(.active) { display: none; }
   .hero { padding: 3.5rem 1.25rem 5rem; }
+}
+
+/* Long words, paths and inline code must wrap instead of widening the page */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.article { overflow-wrap: break-word; }
+.article p code, .article li code, .article blockquote code { overflow-wrap: anywhere; }
+.article pre { max-width: 100%; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 600px) {
+  /* Logo already links home, so drop the "Blog" link and keep Portfolio + Contact visible */
+  .site-nav { gap: 0.9rem; }
+  .site-nav a { font-size: 0.78rem; }
+  .site-nav a.active { display: none; }
+  .site-nav .cta { padding: 0.4rem 0.9rem; }
+  .brand img { height: 30px; }
+  .post-hero { padding: 2.5rem 1.25rem 4rem; }
+  .article { margin: -2.25rem 0.75rem 3rem; padding: 1.75rem 1.1rem; }
+  .article h2 { font-size: 1.3rem; }
+  .article p, .article ul, .article ol { font-size: 1rem; }
+  .article pre { font-size: 0.78rem; padding: 0.9rem; margin-left: -0.35rem; margin-right: -0.35rem; border-radius: 8px; }
+  .post-footer { flex-direction: column; }
+  .post-footer .btn { text-align: center; }
+  .hero h1 { font-size: 1.9rem; }
+  .card-body { padding: 1.25rem 1.3rem 1.4rem; }
+}
+@media (max-width: 380px) {
+  .site-header .bar { padding: 0.6rem 0.9rem; }
+  .site-nav { gap: 0.7rem; }
+  .site-nav a { font-size: 0.72rem; }
+  .brand img { height: 26px; }
+  .listing, .wrap { padding-left: 0.9rem; padding-right: 0.9rem; }
+  .article { margin-left: 0.5rem; margin-right: 0.5rem; }
+}
+@media (min-width: 1600px) {
+  .site-header .bar, .wrap { max-width: 80rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

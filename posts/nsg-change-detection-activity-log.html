@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detecting NSG changes in Microsoft Sentinel | Sandip Khadka Blog</title>
+    <meta name="description" content="What the Azure Activity Log actually records when a Network Security Group changes, and the quirks that shape a Sentinel detection rule.">
+    <link rel="icon" href="../favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="../index.html" aria-label="Blog home"><img src="../images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="../index.html">Blog</a>
+                <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="post-hero">
+        <div class="inner">
+            <a class="back" href="../index.html">&larr; All posts</a>
+            <div class="meta"><span class="tag">Microsoft Sentinel</span><span>20/09/2026</span><span>6 min read</span></div>
+            <h1>Detecting NSG changes in Microsoft Sentinel: what the Activity Log really gives you</h1>
+        </div>
+    </section>
+
+    <article class="article">
+        <p>A single Network Security Group (NSG) rule decides what traffic can reach your virtual machines. SSH or RDP opened to the whole internet is one of the most common causes of cloud compromise, and until recently we had no automated way to learn that a firewall rule had changed.</p>
+        <p>So I built a Sentinel detection for it. The query is the easy part. What took the time was understanding how the Azure Activity Log records an NSG change, because its behaviour is not what you would expect. This post covers those quirks, since they shape the whole design.</p>
+        <p>The goal was to answer three questions every time an NSG or one of its rules changes: <strong>what</strong> changed, <strong>who</strong> changed it, and <strong>how exposed</strong> the result is.</p>
+
+        <h2>First, check the logs are arriving</h2>
+        <p>Each subscription needs a subscription-level diagnostic setting sending the <code>Administrative</code> category to your Sentinel workspace. Before writing any detection, confirm every subscription you care about is actually reporting. Any subscription missing from this output is a blind spot:</p>
+        <pre><code>AzureActivity
+| where TimeGenerated &gt; ago(7d)
+| where OperationNameValue has "NETWORKSECURITYGROUPS"
+| summarize Events = count(), Latest = max(TimeGenerated)
+    by SubscriptionId, OperationNameValue</code></pre>
+
+        <h2>Quirk 1: one change produces three rows</h2>
+        <p>Every NSG write emits three rows into <code>AzureActivity</code>, all sharing a <code>CorrelationId</code>:</p>
+        <ul>
+            <li><code>Start</code> carries the <code>requestbody</code>, the rule as submitted.</li>
+            <li><code>Accept</code> carries the <code>responseBody</code>, the rule as accepted.</li>
+            <li><code>Success</code> carries neither. It is confirmation only.</li>
+        </ul>
+        <p>The row that proves a change applied and the row that says what changed are different rows. The query therefore joins them on <code>CorrelationId</code>: <code>Success</code> for confirmation, <code>Start</code> for the rule detail.</p>
+        <p>It also means an unfiltered query fires three times per change. Filtering the confirmation to <code>Success</code> is what prevents triplicate alerts.</p>
+
+        <h2>Quirk 2: deletes carry no payload</h2>
+        <p>A delete records only the resource path and the caller. There is no <code>requestbody</code>, so you can report that a rule was deleted, by whom and when, but not what it permitted.</p>
+        <p>My query handles deletes on a separate branch and fills the rule detail columns with <code>n/a</code>. This is a property of the Activity Log, not a gap in the query.</p>
+
+        <h2>Quirk 3: Azure does not distinguish create from modify</h2>
+        <p>Both are <code>securityRules/write</code>, because the underlying operation is a PUT. There is no create operation to filter on, so I infer the change type from the etag. An existing rule carries an etag when it is resubmitted, and a genuinely new rule has none to send:</p>
+        <pre><code>| extend ChangeType = iff(isempty(Etag), "Created", "Modified")</code></pre>
+        <blockquote>Treat this as inference, not fact. Validate it in your own tenant: create a test rule, check the label, then edit it and confirm the label flips.</blockquote>
+
+        <h2>Quirk 4: editing a rule can report every rule</h2>
+        <p>Editing a rule in the portal usually sends a PUT for the whole NSG, not the individual rule. The payload then contains every rule in that NSG, so expanding it outputs all of them as if each had changed. A twelve-rule NSG produces twelve rows for one edit.</p>
+        <p>The query handles both shapes by checking whether the payload holds a <code>securityRules</code> array:</p>
+        <pre><code>| extend RuleSet = iff(isnotnull(Payload.properties.securityRules),
+                       todynamic(Payload.properties.securityRules),
+                       pack_array(Payload))
+| mv-expand Rule = RuleSet</code></pre>
+        <p>This over-reporting is still a known limitation. Comparing etags against the previous run would suppress the untouched rules, and I have not built that yet.</p>
+
+        <h2>Grading the exposure</h2>
+        <p>Once the rule detail is extracted, each change is graded so the dangerous ones stand out. An inbound Allow rule from <code>Any</code>, <code>Internet</code> or <code>0.0.0.0/0</code> is graded as follows:</p>
+        <ul>
+            <li><strong>Critical</strong> if the destination port is 22 or 3389, or any port.</li>
+            <li><strong>High</strong> for any other internet-sourced inbound Allow.</li>
+            <li><strong>Normal</strong> for everything else.</li>
+        </ul>
+        <p>Because most NSG changes are routine, I run this rule at Low severity and use a separate High-severity rule, filtered to Critical and High exposure, for the ones that need action. Medium on the routine rule would bury real signals within a week.</p>
+
+        <h2>What the Activity Log cannot tell you</h2>
+        <p>This is the limitation that matters most. The Activity Log records <strong>change events</strong>, not current state. A permissive rule created before logging began, and never touched since, will never appear in it.</p>
+        <p>For current state you need Azure Resource Graph, which holds what every rule is right now. Sentinel analytics rules cannot query Resource Graph, so covering this gap needs another route, such as Defender for Cloud continuous export, a workbook, or a runbook that snapshots the results into a custom table. A change-based detection tells you what moved. It does not tell you what is already wrong.</p>
+
+        <h2>Other limits worth knowing</h2>
+        <ul>
+            <li><strong>Create vs modify is inferred</strong> from the etag, as above.</li>
+            <li><strong>The MFA claim is not proof.</strong> I enrich each change with whether MFA was satisfied, but <code>authnmethodsreferences</code> reflects authentication at token issuance, and tokens refresh. A missing <code>mfa</code> is a reason to investigate, not a confirmed bypass.</li>
+            <li><strong>Subscription names are not in the table.</strong> <code>AzureActivity</code> carries only the subscription ID, so you need a lookup. A Sentinel watchlist is the better long-term home for it.</li>
+        </ul>
+
+        <h2>Takeaway</h2>
+        <p>The detection logic is short once you know the shape of the data. The real work was learning that one change means three rows, that deletes have no payload, that create and modify look identical, and that the log cannot see rules that already existed. Understanding those four things is what stops the rule from alerting three times, missing detail, or giving you false confidence.</p>
+        <p>In the next posts I will cover tuning the rule so it does not flood the incident queue, and sending the alert by email with a Logic App playbook.</p>
+        <hr>
+        <div class="post-footer">
+            <a class="btn" href="../index.html">&larr; All posts</a>
+            <a class="btn" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Get in touch</a>
+        </div>
+    </article>
+
+    <footer class="site-footer">
+        <img src="../images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="../index.html">Blog</a>
+            <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+        </nav>
+        <small>&copy; 2026 Sandip Khadka. All rights reserved.</small>
+    </footer>
+</body>
+</html>

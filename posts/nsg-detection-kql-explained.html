@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The NSG change detection query, explained | Sandip Khadka Blog</title>
+    <meta name="description" content="A walk-through of the KQL behind my Sentinel NSG change detection, built up in small pieces, plus a Resource Graph query for the current-state gap.">
+    <link rel="icon" href="../favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="../index.html" aria-label="Blog home"><img src="../images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="../index.html">Blog</a>
+                <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="post-hero">
+        <div class="inner">
+            <a class="back" href="../index.html">&larr; All posts</a>
+            <div class="meta"><span class="tag">KQL</span><span>25/09/2026</span><span>8 min read</span></div>
+            <h1>The NSG change detection query, explained piece by piece</h1>
+        </div>
+    </section>
+
+    <article class="article">
+        <p>In the <a href="nsg-change-detection-activity-log.html">previous post</a> I covered how the Azure Activity Log records an NSG change: three rows per change, no payload on deletes, create and modify looking identical. This post shows how the query is built around those facts.</p>
+        <p>The full query is around 100 lines, which is hard to read in one go. Here it is in the order I would explain it to a colleague.</p>
+
+        <h2>1. Settings at the top</h2>
+        <pre><code>let report = 1h;
+let SubNames = datatable(SubId:string, SubscriptionName:string)
+[
+    "00000000-0000-0000-0000-000000000000", "Example subscription",
+];</code></pre>
+        <p><code>report</code> is how far back each run looks for changes to alert on. It must equal the rule's run frequency, which I explain in the next post. <code>SubNames</code> is a lookup, because <code>AzureActivity</code> only carries the subscription ID. I generate the rows with the Azure CLI rather than typing them:</p>
+        <pre><code>az account list --all --query "sort_by([].{id:id, name:name}, &amp;name)" -o table</code></pre>
+
+        <h2>2. The operations we care about</h2>
+        <pre><code>let WriteOps = dynamic([
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/WRITE",
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/SECURITYRULES/WRITE"
+]);
+let DeleteOps = dynamic([
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/DELETE",
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/SECURITYRULES/DELETE"
+]);
+let AllOps = array_concat(WriteOps, DeleteOps);</code></pre>
+        <p>Both the whole NSG and the individual security rule can be written or deleted, so all four operations are listed. There is no separate create operation, as explained last time.</p>
+
+        <h2>3. A pool of payloads (the Start and Accept rows)</h2>
+        <pre><code>let Bodies =
+    AzureActivity
+    | where OperationNameValue in~ (WriteOps)
+    | extend Req  = tostring(Properties_d.requestbody),
+             Resp = tostring(Properties_d.responseBody)
+    | extend Rank = iff(isnotempty(Req), 1, 2),
+             Body = iff(isnotempty(Req), Req, Resp)
+    | where isnotempty(Body)
+    | summarize arg_min(Rank, Body) by CorrelationId
+    | project CorrelationId, Payload = todynamic(Body);</code></pre>
+        <p>This collects the rule definition for every write. It prefers the <code>requestbody</code> from the Start row and falls back to the <code>responseBody</code> from the Accept row. <code>arg_min</code> picks one payload per <code>CorrelationId</code>. Note that this pool has no <code>ago(report)</code> filter. It spans the whole lookup window so the Start row is still reachable when its Success row lands near the edge.</p>
+
+        <h2>4. The confirmed changes (the Success rows)</h2>
+        <pre><code>let Confirmed =
+    AzureActivity
+    | where TimeGenerated &gt; ago(report)
+    | where OperationNameValue in~ (AllOps)
+    | where ActivityStatusValue =~ "Success"
+    | extend Entity = tostring(Properties_d.entity)
+    | extend Ev = Authorization_d.evidence
+    | project TimeGenerated, CorrelationId, OperationNameValue, Caller,
+              CallerIpAddress, SubscriptionId, ResourceGroup, Entity,
+              DisplayName   = tostring(Claims_d.name),
+              RoleUsed      = tostring(Ev.role),
+              PrincipalType = tostring(Ev.principalType),
+              MfaSatisfied  = tostring(Claims_d["http://schemas.microsoft.com/claims/authnmethodsreferences"]) has "mfa";</code></pre>
+        <p>This is the set that generates alerts. Filtering to <code>Success</code> stops triplicate alerts, and <code>ago(report)</code> limits it to the reporting window. It also pulls the "who" from the caller details: the display name, the Entra role used, the principal type, and whether MFA was part of the sign-in. Treat that last one as a hint, not proof, because it reflects authentication at token issuance.</p>
+
+        <h2>5. Deletes: a separate branch</h2>
+        <pre><code>let DeleteRows =
+    Confirmed
+    | where OperationNameValue in~ (DeleteOps)
+    | extend ChangeType = iff(OperationNameValue endswith "SECURITYRULES/DELETE",
+                              "Deleted (rule)", "Deleted (whole NSG)")
+    | extend NSGName  = extract(@"(?i)networkSecurityGroups/([^/]+)", 1, Entity),
+             RuleName = extract(@"(?i)securityRules/([^/]+)", 1, Entity)
+    | extend Priority = int(null), Direction = "n/a", Action = "n/a", Protocol = "n/a",
+             SourceIP = "n/a", SourcePort = "n/a", DestinationIP = "n/a", DestPort = "n/a",
+             Description = "", Exposure = "Review";</code></pre>
+        <p>Deletes have no payload, so the rule detail is filled with <code>n/a</code> and the exposure is marked <code>Review</code>. The NSG and rule names come from the resource path instead.</p>
+
+        <h2>6. Writes: join, expand, extract</h2>
+        <pre><code>let WriteRows =
+    Confirmed
+    | where OperationNameValue in~ (WriteOps)
+    | join kind=inner Bodies on CorrelationId
+    | extend RuleSet = iff(isnotnull(Payload.properties.securityRules),
+                           todynamic(Payload.properties.securityRules),
+                           pack_array(Payload))
+    | mv-expand Rule = RuleSet
+    | extend p = Rule.properties
+    | extend RuleName  = tostring(Rule.name),
+             Etag      = tostring(Rule.etag),
+             Direction = tostring(p.direction),
+             Action    = tostring(p.access),
+             Protocol  = tostring(p.protocol),
+             Priority  = toint(p.priority),
+             Description = tostring(p.description)
+    | extend ChangeType = iff(isempty(Etag), "Created", "Modified")</code></pre>
+        <p>This joins each confirmed write to its payload on <code>CorrelationId</code>, expands the rule set (one rule or a whole NSG's worth) and extracts the fields. The etag check labels created vs modified.</p>
+        <p>Sources, destinations and ports can each be a single value, a list, or an application security group, so a <code>case()</code> picks whichever is populated. For example, for the source:</p>
+        <pre><code>| extend SourceIP = case(
+        array_length(todynamic(p.sourceAddressPrefixes)) &gt; 0,
+            strcat_array(todynamic(p.sourceAddressPrefixes), ", "),
+        array_length(todynamic(p.sourceApplicationSecurityGroups)) &gt; 0,
+            strcat("ASG: ", strcat_array(extract_all(
+                @'applicationSecurityGroups/([^/"]+)',
+                tostring(p.sourceApplicationSecurityGroups)), ", ")),
+        tostring(p.sourceAddressPrefix))</code></pre>
+        <p>Wildcards (<code>*</code>) are then replaced with <code>Any</code> so the exposure check and the alert text read naturally.</p>
+
+        <h2>7. Grading the exposure</h2>
+        <pre><code>| extend Exposure = case(
+    Direction =~ "Inbound" and Action =~ "Allow"
+        and SourceIP in ("Any", "Internet", "0.0.0.0/0", "::/0")
+        and DestPort in ("22", "3389"), "Critical",
+    Direction =~ "Inbound" and Action =~ "Allow"
+        and SourceIP in ("Any", "Internet", "0.0.0.0/0", "::/0")
+        and DestPort == "Any", "Critical",
+    Direction =~ "Inbound" and Action =~ "Allow"
+        and SourceIP in ("Any", "Internet", "0.0.0.0/0", "::/0"), "High",
+    "Normal")</code></pre>
+        <p>An internet-sourced inbound Allow to SSH, RDP or any port is Critical. Any other internet-sourced inbound Allow is High. This simple grading is limited: it will not catch a very wide private range, and the port check is a plain string match.</p>
+
+        <h2>8. Putting it together, and the entity columns</h2>
+        <pre><code>union WriteRows, DeleteRows
+| join kind=leftouter SubNames on $left.SubscriptionId == $right.SubId
+| extend Subscription = iff(isempty(SubscriptionName), SubscriptionId, SubscriptionName)
+| extend AccountCustomEntity  = Caller,
+         IPCustomEntity       = CallerIpAddress,
+         ResourceCustomEntity = Entity
+| project TimeGenerated, ChangeType, Exposure, DisplayName, Caller, CallerIpAddress,
+          MfaSatisfied, PrincipalType, RoleUsed, Subscription, ResourceGroup,
+          NSGName, RuleName, Priority, Direction, Action, Protocol,
+          SourceIP, SourcePort, DestinationIP, DestPort, Description,
+          Entity, CorrelationId,
+          AccountCustomEntity, IPCustomEntity, ResourceCustomEntity
+| order by TimeGenerated desc</code></pre>
+        <p>Two details here saved me time. The <code>leftouter</code> join with a fallback means a subscription missing from the lookup still alerts, showing its ID rather than a blank. And the three <code>CustomEntity</code> columns must survive the final <code>project</code>. Drop them and incidents are created with no entities attached, with no warning at all.</p>
+
+        <h2>The complete query</h2>
+        <p>Here are all the pieces together, ready to paste into the Sentinel rule editor. Use the expand icon at the top right of the query box, because the collapsed editor is unusable for a query this long. Replace the example row in <code>SubNames</code> with your own subscription IDs and names.</p>
+        <pre><code>let report = 1h;
+let SubNames = datatable(SubId:string, SubscriptionName:string)
+[
+    "00000000-0000-0000-0000-000000000000", "Example subscription",
+];
+let WriteOps = dynamic([
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/WRITE",
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/SECURITYRULES/WRITE"
+]);
+let DeleteOps = dynamic([
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/DELETE",
+    "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/SECURITYRULES/DELETE"
+]);
+let AllOps = array_concat(WriteOps, DeleteOps);
+// padded pool: spans the full query period so Start rows are reachable
+let Bodies =
+    AzureActivity
+    | where OperationNameValue in~ (WriteOps)
+    | extend Req  = tostring(Properties_d.requestbody),
+             Resp = tostring(Properties_d.responseBody)
+    | extend Rank = iff(isnotempty(Req), 1, 2),
+             Body = iff(isnotempty(Req), Req, Resp)
+    | where isnotempty(Body)
+    | summarize arg_min(Rank, Body) by CorrelationId
+    | project CorrelationId, Payload = todynamic(Body);
+// reporting window only: this is what generates alerts
+let Confirmed =
+    AzureActivity
+    | where TimeGenerated &gt; ago(report)
+    | where OperationNameValue in~ (AllOps)
+    | where ActivityStatusValue =~ "Success"
+    | extend Entity = tostring(Properties_d.entity)
+    | extend Ev = Authorization_d.evidence
+    | project TimeGenerated, CorrelationId, OperationNameValue, Caller, CallerIpAddress,
+              SubscriptionId, ResourceGroup, Entity,
+              DisplayName   = tostring(Claims_d.name),
+              RoleUsed      = tostring(Ev.role),
+              PrincipalType = tostring(Ev.principalType),
+              MfaSatisfied  = tostring(Claims_d["http://schemas.microsoft.com/claims/authnmethodsreferences"]) has "mfa";
+// deletes: no payload, so rule detail is unknown
+let DeleteRows =
+    Confirmed
+    | where OperationNameValue in~ (DeleteOps)
+    | extend ChangeType = iff(OperationNameValue endswith "SECURITYRULES/DELETE",
+                              "Deleted (rule)", "Deleted (whole NSG)")
+    | extend NSGName  = extract(@"(?i)networkSecurityGroups/([^/]+)", 1, Entity),
+             RuleName = extract(@"(?i)securityRules/([^/]+)", 1, Entity)
+    | extend Priority = int(null), Direction = "n/a", Action = "n/a", Protocol = "n/a",
+             SourceIP = "n/a", SourcePort = "n/a", DestinationIP = "n/a", DestPort = "n/a",
+             Description = "", Exposure = "Review";
+// writes: full rule detail
+let WriteRows =
+    Confirmed
+    | where OperationNameValue in~ (WriteOps)
+    | join kind=inner Bodies on CorrelationId
+    | extend RuleSet = iff(isnotnull(Payload.properties.securityRules),
+                           todynamic(Payload.properties.securityRules),
+                           pack_array(Payload))
+    | mv-expand Rule = RuleSet
+    | extend p = Rule.properties
+    | extend RuleName    = tostring(Rule.name),
+             Etag        = tostring(Rule.etag),
+             Direction   = tostring(p.direction),
+             Action      = tostring(p.access),
+             Protocol    = tostring(p.protocol),
+             Priority    = toint(p.priority),
+             Description = tostring(p.description)
+    | extend ChangeType = iff(isempty(Etag), "Created", "Modified")
+    | extend SourceIP = case(
+            array_length(todynamic(p.sourceAddressPrefixes)) &gt; 0,
+                strcat_array(todynamic(p.sourceAddressPrefixes), ", "),
+            array_length(todynamic(p.sourceApplicationSecurityGroups)) &gt; 0,
+                strcat("ASG: ", strcat_array(extract_all(
+                    @'applicationSecurityGroups/([^/"]+)',
+                    tostring(p.sourceApplicationSecurityGroups)), ", ")),
+            tostring(p.sourceAddressPrefix))
+    | extend DestinationIP = case(
+            array_length(todynamic(p.destinationAddressPrefixes)) &gt; 0,
+                strcat_array(todynamic(p.destinationAddressPrefixes), ", "),
+            array_length(todynamic(p.destinationApplicationSecurityGroups)) &gt; 0,
+                strcat("ASG: ", strcat_array(extract_all(
+                    @'applicationSecurityGroups/([^/"]+)',
+                    tostring(p.destinationApplicationSecurityGroups)), ", ")),
+            tostring(p.destinationAddressPrefix))
+    | extend DestPort = iff(array_length(todynamic(p.destinationPortRanges)) &gt; 0,
+                            strcat_array(todynamic(p.destinationPortRanges), ", "),
+                            tostring(p.destinationPortRange)),
+             SourcePort = iff(array_length(todynamic(p.sourcePortRanges)) &gt; 0,
+                            strcat_array(todynamic(p.sourcePortRanges), ", "),
+                            tostring(p.sourcePortRange))
+    | extend SourceIP      = iff(SourceIP == "*", "Any", SourceIP),
+             DestinationIP = iff(DestinationIP == "*", "Any", DestinationIP),
+             DestPort      = iff(DestPort == "*", "Any", DestPort),
+             SourcePort    = iff(SourcePort == "*", "Any", SourcePort),
+             Protocol      = iff(Protocol == "*", "Any", Protocol)
+    | extend NSGName = extract(@"(?i)networkSecurityGroups/([^/]+)", 1, Entity)
+    | extend Exposure = case(
+          Direction =~ "Inbound" and Action =~ "Allow"
+            and SourceIP in ("Any", "Internet", "0.0.0.0/0", "::/0")
+            and DestPort in ("22", "3389"),                          "Critical",
+          Direction =~ "Inbound" and Action =~ "Allow"
+            and SourceIP in ("Any", "Internet", "0.0.0.0/0", "::/0")
+            and DestPort == "Any",                                   "Critical",
+          Direction =~ "Inbound" and Action =~ "Allow"
+            and SourceIP in ("Any", "Internet", "0.0.0.0/0", "::/0"), "High",
+          "Normal")
+    | project-away Etag, Payload, p, Rule, RuleSet;
+union WriteRows, DeleteRows
+| join kind=leftouter SubNames on $left.SubscriptionId == $right.SubId
+| extend Subscription = iff(isempty(SubscriptionName), SubscriptionId, SubscriptionName)
+| extend AccountCustomEntity  = Caller,
+         IPCustomEntity       = CallerIpAddress,
+         ResourceCustomEntity = Entity
+| project TimeGenerated, ChangeType, Exposure, DisplayName, Caller, CallerIpAddress,
+          MfaSatisfied, PrincipalType, RoleUsed, Subscription, ResourceGroup,
+          NSGName, RuleName, Priority, Direction, Action, Protocol,
+          SourceIP, SourcePort, DestinationIP, DestPort, Description,
+          Entity, CorrelationId,
+          AccountCustomEntity, IPCustomEntity, ResourceCustomEntity
+| order by TimeGenerated desc</code></pre>
+
+        <h2>The gotcha that returned empty names</h2>
+        <blockquote>The <code>extract</code> function is case-sensitive by default.</blockquote>
+        <p>The resource ID in <code>_ResourceId</code> arrives lowercased, while <code>Properties_d.entity</code> keeps its original casing. A camel-case pattern run against lowercased text silently returns empty strings, which is the most likely cause of blank NSG and rule names. The <code>(?i)</code> flag at the start of each pattern handles both.</p>
+
+        <h2>Closing the current-state gap</h2>
+        <p>As covered in the last post, none of this sees rules that existed before logging began. Azure Resource Graph holds the rules as they are right now, and this query lists every inbound Allow rule open to the internet:</p>
+        <pre><code>resources
+| where type =~ "microsoft.network/networksecuritygroups"
+| extend NSG = name, RG = resourceGroup
+| extend Custom = iff(isnull(properties.securityRules),
+                      dynamic([]), todynamic(properties.securityRules))
+| mv-expand Rule = Custom
+| extend p = Rule.properties
+| extend Source = iff(array_length(todynamic(p.sourceAddressPrefixes)) &gt; 0,
+                      strcat_array(todynamic(p.sourceAddressPrefixes), ", "),
+                      tostring(p.sourceAddressPrefix))
+| extend Port = iff(array_length(todynamic(p.destinationPortRanges)) &gt; 0,
+                    strcat_array(todynamic(p.destinationPortRanges), ", "),
+                    tostring(p.destinationPortRange))
+| where tostring(p.direction) == "Inbound" and tostring(p.access) == "Allow"
+| where Source in ("*", "Internet", "0.0.0.0/0", "::/0")
+| project subscriptionId, RG, NSG, RuleName = tostring(Rule.name),
+          Priority = toint(p.priority), Port, Source
+| order by NSG asc</code></pre>
+        <p>Sentinel analytics rules cannot query Resource Graph, so this cannot become a rule directly. I use it as a manual check, and the options for automating it are a Defender for Cloud export, a workbook, or a runbook that snapshots results into a custom table.</p>
+
+        <h2>Before you trust it</h2>
+        <p>Temporarily set <code>report = 24h</code>, run the query in Logs, and confirm that known changes from the last day appear with subscription names resolved and exposure graded. Then set <code>report</code> back to match the rule frequency. Next time: getting the scheduling and grouping right so this does not flood your queue.</p>
+        <hr>
+        <div class="post-footer">
+            <a class="btn" href="../index.html">&larr; All posts</a>
+            <a class="btn" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Get in touch</a>
+        </div>
+    </article>
+
+    <footer class="site-footer">
+        <img src="../images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="../index.html">Blog</a>
+            <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+        </nav>
+        <small>&copy; 2026 Sandip Khadka. All rights reserved.</small>
+    </footer>
+</body>
+</html>

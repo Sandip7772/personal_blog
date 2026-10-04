@@ -1,23 +1,30 @@
 [
   {
-    "title": "Hunting suspicious sign-ins in Microsoft Sentinel",
-    "url": "https://blog.khadkasandip.com.np/posts/sentinel-suspicious-signins.html",
-    "date": "2026-10-03",
+    "title": "Emailing Sentinel incidents with a Logic App playbook",
+    "url": "posts/sentinel-email-playbook-logic-app.html",
+    "date": "2026-10-04",
     "tag": "Microsoft Sentinel",
-    "excerpt": "A walk-through of the KQL queries I use each morning to spot impossible travel and repeated failed sign-ins."
+    "excerpt": "Building the email playbook, the permission errors that block it, the sender account trap, and three ways to test it."
   },
   {
-    "title": "Tuning noisy CrowdStrike detections",
-    "url": "https://blog.khadkasandip.com.np/posts/crowdstrike-tuning.html",
+    "title": "Tuning Sentinel analytics rules so they don't flood your queue",
+    "url": "posts/sentinel-analytics-rule-tuning.html",
     "date": "2026-10-01",
-    "tag": "CrowdStrike",
-    "excerpt": "How I cut false positives in half without losing visibility, and what I check before excluding anything."
+    "tag": "Microsoft Sentinel",
+    "excerpt": "The scheduling, grouping and severity settings that stop a rule creating 144 duplicate incidents, using an NSG change rule as the example."
   },
   {
-    "title": "My daily SOC checklist",
-    "url": "https://blog.khadkasandip.com.np/posts/daily-soc-checklist.html",
-    "date": "2026-09-28",
-    "tag": "SOC",
-    "excerpt": "The short list I run through at the start of every shift to keep alerts, tickets and patching on track."
+    "title": "The NSG change detection query, explained piece by piece",
+    "url": "posts/nsg-detection-kql-explained.html",
+    "date": "2026-09-25",
+    "tag": "KQL",
+    "excerpt": "A walk-through of the KQL behind the NSG detection, built up in small pieces, plus a Resource Graph query for the current-state gap."
+  },
+  {
+    "title": "Detecting NSG changes in Microsoft Sentinel: what the Activity Log really gives you",
+    "url": "posts/nsg-change-detection-activity-log.html",
+    "date": "2026-09-20",
+    "tag": "Microsoft Sentinel",
+    "excerpt": "One NSG change produces three log rows, deletes carry no payload, and create vs modify is only inferred. The Activity Log quirks that shape a Sentinel detection."
   }
 ]

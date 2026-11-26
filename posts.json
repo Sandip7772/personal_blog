@@ -1,5 +1,12 @@
 [
   {
+    "title": "Azure Private Endpoint step by step: set it up and prove it works",
+    "url": "posts/azure-private-endpoint-storage-account-guide.html",
+    "date": "2026-11-26",
+    "tag": "Azure Networking",
+    "excerpt": "Lock down a Storage Account with a Private Endpoint, then prove it with DNS, connectivity and data-access tests plus a negative control."
+  },
+  {
     "title": "Emailing Sentinel incidents with a Logic App playbook",
     "url": "posts/sentinel-email-playbook-logic-app.html",
     "date": "2026-10-04",

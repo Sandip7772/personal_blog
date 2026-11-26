@@ -98,9 +98,7 @@
             grid.textContent = '';
             if (!posts.length) { grid.appendChild(el('p', 'status', 'No posts found.')); return; }
             posts.forEach(function (p, i) {
-                // The first card is wide only when that fills the 3-column rows evenly (2, 5, 8... posts)
-                var featured = i === 0 && posts.length % 3 === 2;
-                var card = el('article', 'card' + (featured ? ' featured' : ''));
+                var card = el('article', 'card');
                 card.appendChild(el('div', 'card-top'));
                 var body = el('div', 'card-body');
                 var meta = el('div', 'meta');

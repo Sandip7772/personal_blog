@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Azure Private Endpoint step by step | Sandip Khadka</title>
+    <meta name="description" content="Lock down an Azure Storage Account with a Private Endpoint, then prove it works: DNS, connectivity, data access and a negative control, step by step.">
+    <link rel="icon" href="../favicon.ico" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,600|Lato:300,400,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+    <!-- SEO -->
+    <meta name="author" content="Sandip Khadka">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <link rel="canonical" href="https://blog.khadkasandip.com.np/posts/azure-private-endpoint-storage-account-guide.html">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Sandip Khadka Blog">
+    <meta property="og:title" content="Azure Private Endpoint step by step: set it up and prove it works">
+    <meta property="og:description" content="Lock down an Azure Storage Account with a Private Endpoint, then prove it works: DNS, connectivity, data access and a negative control, step by step.">
+    <meta property="og:url" content="https://blog.khadkasandip.com.np/posts/azure-private-endpoint-storage-account-guide.html">
+    <meta property="og:image" content="https://blog.khadkasandip.com.np/images/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="article:published_time" content="2026-11-26">
+    <meta property="article:author" content="Sandip Khadka">
+    <meta property="article:section" content="Azure Networking">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Azure Private Endpoint step by step: set it up and prove it works">
+    <meta name="twitter:description" content="Lock down an Azure Storage Account with a Private Endpoint, then prove it works: DNS, connectivity, data access and a negative control, step by step.">
+    <meta name="twitter:image" content="https://blog.khadkasandip.com.np/images/og-image.png">
+    <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Azure Private Endpoint step by step: set it up and prove it works", "description": "Lock down an Azure Storage Account with a Private Endpoint, then prove it works: DNS, connectivity, data access and a negative control, step by step.", "datePublished": "2026-11-26", "dateModified": "2026-11-26", "author": {"@type": "Person", "name": "Sandip Khadka", "url": "https://khadkasandip.com.np"}, "image": "https://blog.khadkasandip.com.np/images/og-image.png", "mainEntityOfPage": {"@type": "WebPage", "@id": "https://blog.khadkasandip.com.np/posts/azure-private-endpoint-storage-account-guide.html"}, "publisher": {"@type": "Person", "name": "Sandip Khadka"}}</script>
+    <!-- /SEO -->
+</head>
+<body>
+    <header class="site-header">
+        <div class="bar">
+            <a class="brand" href="../index.html" aria-label="Blog home"><img src="../images/llogo.png" alt="Sandip Khadka"></a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="active" href="../index.html">Blog</a>
+                <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+                <a class="cta" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="post-hero">
+        <div class="inner">
+            <a class="back" href="../index.html">&larr; All posts</a>
+            <div class="meta"><span class="tag">Azure Networking</span><span>26/11/2026</span><span>7 min read</span></div>
+            <h1>Azure Private Endpoint step by step: set it up and prove it works</h1>
+        </div>
+    </section>
+
+    <article class="article">
+        <p>A Storage Account with a public endpoint is one misconfigured firewall rule away from being reachable by anyone. A Private Endpoint removes that exposure by giving the account a private IP address inside your own virtual network, so traffic never crosses the public internet.</p>
+        <p>This post walks through the full exercise I use to test it: create a locked-down Storage Account, attach a Private Endpoint, and then <strong>prove</strong> it works from a test VM in the same VNet. The proof matters as much as the setup. A Private Endpoint that is created but not tested is only an assumption.</p>
+        <p>I use a Storage Account (blob) as the example, but the same pattern applies to anything that supports Private Link, including Key Vault, SQL Database, Cosmos DB, App Service, Container Registry and Event Hub. Only the sub-resource and the DNS zone name change. Because the test VM sits in the same VNet as the endpoint, <strong>no VNet peering is required</strong>.</p>
+
+        <h2>What you need first</h2>
+        <ul>
+            <li>A VNet with a test VM already in it (I call it the development VNet below).</li>
+            <li>Permission to create a Storage Account, a subnet, a Private Endpoint and a Private DNS zone.</li>
+            <li>Azure CLI installed on the test VM.</li>
+        </ul>
+
+        <h2>Step 1: Create the Storage Account</h2>
+        <ul>
+            <li>In the portal, go to <strong>Storage accounts</strong> and select <strong>Create</strong>.</li>
+            <li>On <strong>Basics</strong>, choose the subscription, resource group, a globally unique account name, and a region that matches your VNet.</li>
+            <li>On <strong>Networking</strong>, set network access to <strong>Disable public access and use private access</strong>.</li>
+            <li>Select <strong>Review + Create</strong>, then <strong>Create</strong>.</li>
+        </ul>
+        <p><strong>Expected result:</strong> the account exists with all public network access disabled. At this point nobody can reach it, including you. That is intentional.</p>
+
+        <h2>Step 2: Create a dedicated subnet for the Private Endpoint</h2>
+        <ul>
+            <li>Open the VNet, go to <strong>Subnets</strong> and select <strong>Subnet</strong>.</li>
+            <li>Name it something clear, such as <code>subnet-privateendpoints</code>.</li>
+            <li>Choose an unused address range inside the VNet, for example a /24.</li>
+            <li>Leave the other settings at their defaults and save.</li>
+        </ul>
+        <p><strong>Expected result:</strong> a new subnet, separate from the VM's subnet. Keeping endpoints in their own subnet makes NSG rules and later troubleshooting much simpler.</p>
+
+        <h2>Step 3: Create the Private Endpoint</h2>
+        <ul>
+            <li>Open the Storage Account, go to <strong>Networking</strong>, then the <strong>Private endpoint connections</strong> tab.</li>
+            <li>Select <strong>Private endpoint</strong>.</li>
+            <li>On <strong>Basics</strong>, name it (for example <code>pe-storage-blob</code>) and match the VNet's region.</li>
+            <li>On <strong>Resource</strong>, set the target sub-resource to <code>blob</code>.</li>
+            <li>On <strong>Virtual Network</strong>, pick your VNet and the <code>subnet-privateendpoints</code> subnet.</li>
+            <li>On <strong>DNS</strong>, leave <strong>Integrate with private DNS zone</strong> set to <strong>Yes</strong> and accept the suggested zone, <code>privatelink.blob.core.windows.net</code>.</li>
+            <li>Select <strong>Review + Create</strong>, then <strong>Create</strong>.</li>
+        </ul>
+        <p><strong>Expected result:</strong> the endpoint is provisioned with a private IP inside the VNet, and the Private DNS zone is created and linked.</p>
+        <blockquote>One endpoint serves one sub-resource. If you also need files, queues or tables, create a separate endpoint for each, each with its own <code>privatelink</code> zone.</blockquote>
+
+        <h2>Step 4: Verify the DNS configuration</h2>
+        <p>DNS is where most Private Endpoint problems start, so check it before testing anything else.</p>
+        <ul>
+            <li>Search for <strong>Private DNS zones</strong> and open <code>privatelink.blob.core.windows.net</code>.</li>
+            <li>Under <strong>Virtual network links</strong>, confirm your VNet is listed.</li>
+            <li>Under <strong>Recordsets</strong>, confirm an A record exists pointing to the endpoint's private IP.</li>
+        </ul>
+        <p><strong>Expected result:</strong> the zone is linked to the VNet and can resolve the storage account name to a private IP.</p>
+
+        <h2>Step 5: Check NSG rules (if applicable)</h2>
+        <ul>
+            <li>Review any NSG attached to the VM's subnet and to the Private Endpoint's subnet.</li>
+            <li>Confirm traffic on port 443 is allowed between the two subnets.</li>
+        </ul>
+        <p><strong>Expected result:</strong> no NSG rule blocks port 443 between the VM subnet and the endpoint subnet.</p>
+        <p>If you have followed my earlier posts on NSG change detection, this is a good moment to confirm any rule change you make here shows up in Sentinel.</p>
+
+        <h2>Step 6: Test DNS resolution from the VM</h2>
+        <p>Connect to the test VM by RDP or SSH and run:</p>
+        <pre><code>nslookup &lt;storageaccount&gt;.blob.core.windows.net</code></pre>
+        <p><strong>Expected result:</strong> the name resolves to a <strong>private</strong> IP address from your subnet range (for example 10.x.x.x), not a public Azure IP. This is the single most useful check in the whole guide.</p>
+
+        <h2>Step 7: Test network connectivity from the VM</h2>
+        <p>On Windows (PowerShell):</p>
+        <pre><code>Test-NetConnection &lt;storageaccount&gt;.blob.core.windows.net -Port 443</code></pre>
+        <p>On Linux:</p>
+        <pre><code>nc -zv &lt;storageaccount&gt;.blob.core.windows.net 443</code></pre>
+        <p><strong>Expected result:</strong> the TCP connection on port 443 succeeds (<code>TcpTestSucceeded : True</code>, or "succeeded" on Linux).</p>
+
+        <h2>Step 8: Test real data access from the VM</h2>
+        <p>A successful port test does not prove you can read data. Test that too:</p>
+        <pre><code>az login
+az storage blob list --account-name &lt;storageaccount&gt; --container-name &lt;container&gt; --auth-mode login</code></pre>
+        <p><strong>Expected result:</strong> the blob list returns successfully, confirming the VM reaches the account privately.</p>
+
+        <h2>Step 9: The negative control</h2>
+        <p>A test is only convincing if you also show the failure case. From a device <strong>outside</strong> the VNet, such as a personal laptop or Azure Cloud Shell, repeat the request.</p>
+        <h3>Do not use Test-NetConnection for this</h3>
+        <p>It is tempting to repeat the port test from your laptop, but it can mislead you. The storage firewall works at the service layer, so the public endpoint can still accept a TCP connection on 443 and then reject the request. A successful port test from outside does not mean public access is open. Use a real data request instead:</p>
+        <pre><code># Should fail if public access is really disabled
+Invoke-WebRequest -Uri "https://&lt;storageaccount&gt;.blob.core.windows.net/&lt;container&gt;/&lt;blobname&gt;"</code></pre>
+        <p>Or with the Azure CLI:</p>
+        <pre><code>az storage blob list --account-name &lt;storageaccount&gt; --container-name &lt;container&gt; --auth-mode login</code></pre>
+        <p>If public access is correctly disabled, you should see an error such as:</p>
+        <pre><code>This request is not authorized to perform this operation.</code></pre>
+        <p>or a 403 or timeout. What you must <strong>not</strong> see is a successful blob list.</p>
+        <p><strong>Expected result:</strong> the request fails, confirming the account cannot be reached over the public internet.</p>
+
+        <h2>Troubleshooting</h2>
+        <ul>
+            <li><strong>DNS still returns a public IP.</strong> Check the Private DNS zone is linked to the VNet and that the A record exists. Also check the VM is not using custom DNS servers that cannot forward to Azure DNS.</li>
+            <li><strong>Port 443 is unreachable.</strong> Check NSG rules on both the VM subnet and the endpoint subnet, and check the effective routes on the VM's network interface.</li>
+            <li><strong>Data access fails despite connectivity.</strong> This is usually permissions, not networking. Confirm the identity you used with <code>az login</code> has a data-plane RBAC role on the account, such as Storage Blob Data Reader or Storage Blob Data Contributor. Owner or Contributor on the account is not enough for <code>--auth-mode login</code>.</li>
+        </ul>
+
+        <h2>Takeaway</h2>
+        <p>Creating the Private Endpoint is the quick part. The value comes from the checks that follow: DNS resolves privately, the port is reachable from inside, data can be read from inside, and the same request fails from outside. If all four hold, you have evidence the account is private, not just a setting that says so.</p>
+        <p>The same nine steps work for any other Private Link resource. Swap the sub-resource and the <code>privatelink</code> DNS zone and repeat the tests.</p>
+        <hr>
+        <div class="post-footer">
+            <a class="btn" href="../index.html">&larr; All posts</a>
+            <a class="btn" href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Get in touch</a>
+        </div>
+    </article>
+
+    <footer class="site-footer">
+        <img src="../images/llogo.png" alt="Sandip Khadka">
+        <nav aria-label="Footer">
+            <a href="../index.html">Blog</a>
+            <a href="https://khadkasandip.com.np" target="_blank" rel="noopener noreferrer">Portfolio</a>
+            <a href="https://khadkasandip.com.np/#contact" target="_blank" rel="noopener noreferrer">Contact</a>
+        </nav>
+        <small>&copy; 2026 Sandip Khadka. All rights reserved.</small>
+    </footer>
+</body>
+</html>
